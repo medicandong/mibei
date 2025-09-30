@@ -1,0 +1,88 @@
+name: Update Subscription
+
+on:
+  schedule:
+    # 每天早上9:00执行 (UTC+8)
+    - cron: '0 1 * * *'
+    # 如果9:00未更新，下午14:00再次执行 (UTC+8)
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # 允许手动触发
+    inputs:
+      force_update:
+        description: '强制更新（忽略今日已更新检查）'
+        required: false
+        default: 'false'
+
+jobs:
+  update-subscription:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 lxml
+    
+    - name: Check if already updated today
+      id: check_date
+      run: |
+        if [ -f "last_updated.txt" ]; then
+          LAST_UPDATED=$(cat last_updated.txt)
+          TODAY=$(date +%Y-%m-%d)
+          if [ "$LAST_UPDATED" = "$TODAY" ] && [ "${{ github.event.inputs.force_update }}" != "true" ]; then
+            echo "今日已更新，跳过执行"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "需要更新"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "首次执行，需要更新"
+          echo "skip=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Run enhanced crawler
+      if: steps.check_date.outputs.skip == 'false'
+      run: |
+        python enhanced_crawler.py
+    
+    - name: Check if subscription.txt was updated
+      if: steps.check_date.outputs.skip == 'false'
+      id: check_update
+      run: |
+        if [ -f "subscription.txt" ]; then
+          if git diff --quiet HEAD subscription.txt; then
+            echo "文件未更新"
+            echo "updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "文件已更新"
+            echo "updated=true" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "文件不存在"
+          echo "updated=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Update last_updated date
+      if: steps.check_update.outputs.updated == 'true'
+      run: |
+        date +%Y-%m-%d > last_updated.txt
+    
+    - name: Commit and push if changed
+      if: steps.check_update.outputs.updated == 'true'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add subscription.txt last_updated.txt
+        git commit -m "自动更新订阅链接 - $(date +'%Y-%m-%d %H:%M:%S')"
+        git push
